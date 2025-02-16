@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Instancia de Ubuntu con dos unidades EBS y RAID1'
+
+Resources:
+
+  EC2SecurityGroupNAS:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: "NAS-mensagl-2025-rufino"
+      GroupDescription: 'Grupo de seguridad para el NAS'
+      VpcId: !ImportValue VPCId # Importa el ID de la VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0"
+
+  NetworkInterfaceNAS:
+    Type: 'AWS::EC2::NetworkInterface'
+    Properties:
+      SubnetId: !ImportValue PrivateSubnet1Id
+      PrivateIpAddress: "10.215.3.200"
+      Description: "Network Interface for NAS"
+      GroupSet:
+        - !Ref EC2SecurityGroupNAS
+      Tags:
+        - Key: Name
+          Value: "NAS-interface"
+
+  EC2NAS:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      ImageId: 'ami-04b4f1a9cf54c11d0' # Reemplaza con la ID de la AMI de Ubuntu deseada
+      KeyName: "ssh-mensagl-2025-rufino"
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref NetworkInterfaceNAS
+          DeviceIndex: '0'
+      BlockDeviceMappings:
+        - DeviceName: '/dev/sdf'
+          Ebs:
+            Encrypted: false
+            DeleteOnTermination: true
+            Iops: 3000
+            VolumeSize: '30' # Tamaño del primer EBS en GB
+            VolumeType: gp3
+        - DeviceName: '/dev/sdp'
+          Ebs:
+            Encrypted: false
+            DeleteOnTermination: true
+            Iops: 3000
+            VolumeSize: '30' # Tamaño del segundo EBS en GB
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: "NAS-mensagl-2025-rufino"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Actualizamos el sistema
+          apt-get update -y
+          apt-get upgrade -y
+
+          # Instalamos mdadm
+          apt-get install mdadm -y
+
+          # Detectamos los dispositivos EBS de 30 GB usando lsblk y grep
+          DISKS=$(lsblk -o NAME,SIZE | grep "30G" | awk '{print "/dev/"$1}')
+
+          # Creamos el RAID1 con los dispositivos detectados
+          yes | mdadm --create --verbose /dev/md0 --level=1 --name=RAID1 --raid-devices=2 $(echo $DISKS | awk '{print $1, $2}')
+
+          # Creamos el sistema de archivos en el RAID
+          mkfs.ext4 -F /dev/md0
+
+          # Creamos un punto de montaje y montamos el RAID
+          mkdir -p /mnt/raid
+          mount /dev/md0 /mnt/raid
+
+          # Agregamos el RAID a /etc/fstab para montaje automático
+          echo '/dev/md0 /mnt/raid ext4 defaults,nofail,discard 0 0' >> /etc/fstab
+
+Outputs:
+  InstanceNASId:
+    Description: 'ID de la instancia de Ubuntu'
+    Value: !Ref EC2NAS
+  SecurityGroupNASId:
+    Description: "Security Group ID"
+    Value: !Ref EC2SecurityGroupNAS
